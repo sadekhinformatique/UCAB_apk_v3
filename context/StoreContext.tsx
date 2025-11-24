@@ -1,32 +1,31 @@
-
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, UserRole, Transaction, Member, TransactionType, Gender, Budget, AppSettings, ExpenseCategory, CommunityMessage, Sector, Level } from '../types';
 import { ADMIN_EMAIL, ADMIN_PASS } from '../constants';
 
 interface StoreContextType {
   user: User | null;
-  login: (email: string, pass: string) => boolean;
+  login: (email: string, pass: string) => Promise<boolean>;
   logout: () => void;
   
   transactions: Transaction[];
-  addTransaction: (t: Omit<Transaction, 'id' | 'status' | 'signature'>) => void;
-  approveTransaction: (id: string) => void;
-  rejectTransaction: (id: string) => void;
-  deleteTransaction: (id: string) => void;
+  addTransaction: (t: Omit<Transaction, 'id' | 'status' | 'signature'>) => Promise<void>;
+  approveTransaction: (id: string) => Promise<void>;
+  rejectTransaction: (id: string) => Promise<void>;
+  deleteTransaction: (id: string) => Promise<void>;
   
   members: Member[];
-  addMember: (m: Omit<Member, 'id' | 'uniqueId'>) => void;
-  deleteMember: (id: string) => void;
+  addMember: (m: Omit<Member, 'id' | 'uniqueId'>) => Promise<void>;
+  deleteMember: (id: string) => Promise<void>;
 
   budgets: Budget[];
-  updateBudget: (id: string, amount: number) => void;
+  updateBudget: (id: string, amount: number, category: string) => Promise<void>;
 
   settings: AppSettings;
-  updateSettings: (s: AppSettings) => void;
+  updateSettings: (s: AppSettings) => Promise<void>;
 
   messages: CommunityMessage[];
-  addMessage: (content: string) => void;
-  deleteMessage: (id: string) => void;
+  addMessage: (content: string) => Promise<void>;
+  deleteMessage: (id: string) => Promise<void>;
   
   stats: {
     balance: number;
@@ -34,105 +33,96 @@ interface StoreContextType {
     totalExpense: number;
     pendingCount: number;
   };
+  isLoading: boolean;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
 
-// Mock Data
-const MOCK_MEMBERS: Member[] = [
-  {
-    id: '1',
-    dossierNumber: '0001',
-    ine: 'INE123456',
-    uniqueId: 'A00000000001',
-    firstName: 'Jean',
-    lastName: 'Dupont',
-    dob: '1998-05-12',
-    sector: Sector.INFO,
-    level: Level.L2,
-    gender: Gender.MALE,
-    balance: 5000,
-  },
-  {
-    id: '2',
-    dossierNumber: '0002',
-    ine: 'INE654321',
-    uniqueId: 'B00000000001',
-    firstName: 'Marie',
-    lastName: 'Curie',
-    dob: '1999-11-07',
-    sector: Sector.ELEC,
-    level: Level.L3,
-    gender: Gender.FEMALE,
-    balance: 2500,
-  }
-];
-
-const MOCK_TRANSACTIONS: Transaction[] = [
-  {
-    id: 't1',
-    type: TransactionType.INCOME,
-    category: 'Cotisation',
-    amount: 15000,
-    date: '2023-10-01',
-    description: 'Cotisation annuelle',
-    performedBy: 'Jean Dupont',
-    matricule: 'A00000000001',
-    function: 'Membre',
-    responsible: 'Trésorier',
-    status: 'APPROVED',
-    signature: 'SIG-123',
-    receiptNumber: 'REC-001'
-  },
-  {
-    id: 't2',
-    type: TransactionType.EXPENSE,
-    category: 'Transport',
-    amount: 2000,
-    date: '2023-10-05',
-    description: 'Taxi pour réunion préfecture',
-    performedBy: 'Marie Curie',
-    matricule: 'B00000000001',
-    function: 'Secrétaire',
-    responsible: 'Président',
-    status: 'PENDING',
-    signature: 'SIG-124'
-  }
-];
-
-const MOCK_BUDGETS: Budget[] = Object.values(ExpenseCategory).map((cat, index) => ({
-  id: `b-${index}`,
-  category: cat,
-  allocatedAmount: index === 0 ? 50000 : 25000, // Just some mock numbers
-  spentAmount: 0,
-  year: new Date().getFullYear()
-}));
-
-const MOCK_MESSAGES: CommunityMessage[] = [
-    {
-        id: 'm1',
-        userId: 'membre@asso.com',
-        userName: 'Jean Dupont',
-        userRole: UserRole.MEMBRE,
-        memberInfo: { sector: Sector.INFO, level: Level.L2 },
-        content: "Salut à tous ! Quand aura lieu la prochaine assemblée générale ?",
-        timestamp: new Date(Date.now() - 86400000).toISOString()
-    }
-];
+// API Helper
+const API_URL = '/.netlify/functions/api';
 
 export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [transactions, setTransactions] = useState<Transaction[]>(MOCK_TRANSACTIONS);
-  const [members, setMembers] = useState<Member[]>(MOCK_MEMBERS);
-  const [budgets, setBudgets] = useState<Budget[]>(MOCK_BUDGETS);
-  const [messages, setMessages] = useState<CommunityMessage[]>(MOCK_MESSAGES);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [messages, setMessages] = useState<CommunityMessage[]>([]);
   const [settings, setSettings] = useState<AppSettings>({
     associationName: 'A.E.U.C.A.B.DK',
     currency: 'FCFA',
     logoUrl: ''
   });
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Calculate spent amounts for budgets automatically
+  // Load Data from DB on Mount
+  const refreshData = async () => {
+    try {
+      const res = await fetch(`${API_URL}?action=init`);
+      if (res.ok) {
+        const data = await res.json();
+        
+        // Map DB fields to Frontend Types (snake_case to camelCase correction if needed, 
+        // strictly speaking postgres.js returns columns as is, usually snake_case in DB)
+        // For simplicity, we assume the API handles mapping or we map here.
+        // To be safe, let's map manually given the schema.sql uses snake_case
+        
+        const mapMember = (m: any): Member => ({
+            id: m.id, uniqueId: m.unique_id, firstName: m.first_name, lastName: m.last_name,
+            dob: m.dob, sector: m.sector as Sector, level: m.level as Level, gender: m.gender as Gender,
+            dossierNumber: m.dossier_number, ine: m.ine, balance: parseFloat(m.balance)
+        });
+
+        const mapTransaction = (t: any): Transaction => ({
+            id: t.id, type: t.type as TransactionType, category: t.category, amount: parseFloat(t.amount),
+            date: t.date, description: t.description, performedBy: t.performed_by, matricule: t.matricule,
+            function: t.function, receiptNumber: t.receipt_number, status: t.status, responsible: t.responsible, signature: t.signature,
+            proofUrl: t.proof_url
+        });
+
+        const mapBudget = (b: any): Budget => ({
+            id: b.id, category: b.category, allocatedAmount: parseFloat(b.allocated_amount), spentAmount: 0, year: b.year
+        });
+        
+        const mapMessage = (m: any): CommunityMessage => ({
+            id: m.id, userId: m.user_id, userName: m.user_name, userRole: m.user_role as UserRole,
+            content: m.content, timestamp: m.timestamp,
+            memberInfo: m.member_info_json ? JSON.parse(m.member_info_json) : undefined
+        });
+
+        if (data.members) setMembers(data.members.map(mapMember));
+        if (data.transactions) setTransactions(data.transactions.map(mapTransaction));
+        if (data.messages) setMessages(data.messages.map(mapMessage));
+        
+        // Settings
+        if (data.settings && data.settings.association_name) {
+            setSettings({
+                associationName: data.settings.association_name,
+                currency: data.settings.currency,
+                logoUrl: data.settings.logo_url || ''
+            });
+        }
+
+        // Handle Budgets (Merge with defaults if empty)
+        let dbBudgets = data.budgets ? data.budgets.map(mapBudget) : [];
+        if (dbBudgets.length === 0) {
+            dbBudgets = Object.values(ExpenseCategory).map((cat, index) => ({
+                id: `b-${index}`, category: cat, allocatedAmount: 0, spentAmount: 0, year: new Date().getFullYear()
+            }));
+        }
+        setBudgets(dbBudgets);
+      }
+    } catch (e) {
+      console.error("Failed to fetch initial data", e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshData();
+  }, []);
+
+  // Calculate spent amounts for budgets locally
   useEffect(() => {
     const newBudgets = budgets.map(b => {
       const spent = transactions
@@ -140,47 +130,36 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         .reduce((acc, t) => acc + t.amount, 0);
       return { ...b, spentAmount: spent };
     });
-    // Only update if changed to avoid infinite loop - simplistic check
+    // Deep compare to avoid infinite loop
     if (JSON.stringify(newBudgets) !== JSON.stringify(budgets)) {
       setBudgets(newBudgets);
     }
-  }, [transactions]);
+  }, [transactions]); // removed budgets from dependency to avoid loop
 
-  const login = (email: string, pass: string): boolean => {
-    if (email === ADMIN_EMAIL && pass === ADMIN_PASS) {
-      setUser({
-        email,
-        name: 'Administrateur (Djahfar)',
-        role: UserRole.TRESORIER 
-      });
-      return true;
-    }
-    // Demo President
-    if (email === 'president@asso.com') {
-       setUser({
-        email,
-        name: 'Président Association',
-        role: UserRole.PRESIDENT
-      });
-      return true;
-    }
-    // Demo Member
-    if (email === 'membre@asso.com') {
-       // In a real app, we check if the member exists in the DB here
-       setUser({
-        email,
-        name: 'Jean Dupont',
-        role: UserRole.MEMBRE,
-        memberId: '1' // Linked to Jean Dupont in Mock Data
-      });
-      return true;
-    }
+  const login = async (email: string, pass: string): Promise<boolean> => {
+    try {
+        const res = await fetch(`${API_URL}?action=login`, {
+            method: 'POST',
+            body: JSON.stringify({ email, password: pass })
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const u = data.user;
+            setUser({
+                email: u.email,
+                name: u.name,
+                role: u.role as UserRole,
+                memberId: u.member_id
+            });
+            return true;
+        }
+    } catch(e) { console.error(e); }
     return false;
   };
 
   const logout = () => setUser(null);
 
-  const addTransaction = (t: Omit<Transaction, 'id' | 'status' | 'signature'>) => {
+  const addTransaction = async (t: Omit<Transaction, 'id' | 'status' | 'signature'>) => {
     const newTx: Transaction = {
       ...t,
       id: Math.random().toString(36).substr(2, 9),
@@ -188,22 +167,37 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       signature: `SIG-${Date.now()}`,
       receiptNumber: t.type === TransactionType.INCOME ? `REC-${Date.now()}` : undefined
     };
+    
+    // Optimistic UI
     setTransactions(prev => [newTx, ...prev]);
+
+    await fetch(`${API_URL}?action=add_transaction`, {
+        method: 'POST', body: JSON.stringify(newTx)
+    });
   };
 
-  const approveTransaction = (id: string) => {
+  const approveTransaction = async (id: string) => {
     setTransactions(prev => prev.map(t => t.id === id ? { ...t, status: 'APPROVED' } : t));
+    await fetch(`${API_URL}?action=update_transaction_status`, {
+        method: 'POST', body: JSON.stringify({ id, status: 'APPROVED' })
+    });
   };
 
-  const rejectTransaction = (id: string) => {
+  const rejectTransaction = async (id: string) => {
     setTransactions(prev => prev.map(t => t.id === id ? { ...t, status: 'REJECTED' } : t));
+    await fetch(`${API_URL}?action=update_transaction_status`, {
+        method: 'POST', body: JSON.stringify({ id, status: 'REJECTED' })
+    });
   };
 
-  const deleteTransaction = (id: string) => {
+  const deleteTransaction = async (id: string) => {
       setTransactions(prev => prev.filter(t => t.id !== id));
+      await fetch(`${API_URL}?action=delete_transaction`, {
+          method: 'POST', body: JSON.stringify({ id })
+      });
   }
 
-  const addMember = (m: Omit<Member, 'id' | 'uniqueId'>) => {
+  const addMember = async (m: Omit<Member, 'id' | 'uniqueId'>) => {
     const prefix = m.gender === Gender.MALE ? 'A' : 'B';
     const randomSuffix = Math.floor(10000000000 + Math.random() * 90000000000).toString();
     const uniqueId = `${prefix}${randomSuffix}`;
@@ -214,20 +208,36 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       uniqueId
     };
     setMembers(prev => [...prev, newMember]);
+
+    await fetch(`${API_URL}?action=add_member`, {
+        method: 'POST', body: JSON.stringify(newMember)
+    });
   };
 
-  const deleteMember = (id: string) => {
+  const deleteMember = async (id: string) => {
       setMembers(prev => prev.filter(m => m.id !== id));
+      await fetch(`${API_URL}?action=delete_member`, {
+          method: 'POST', body: JSON.stringify({ id })
+      });
   }
 
-  const updateBudget = (id: string, amount: number) => {
+  const updateBudget = async (id: string, amount: number, category: string) => {
     setBudgets(prev => prev.map(b => b.id === id ? { ...b, allocatedAmount: amount } : b));
+    await fetch(`${API_URL}?action=update_budget`, {
+        method: 'POST', 
+        body: JSON.stringify({ id, amount, category, year: new Date().getFullYear() })
+    });
   };
 
-  const updateSettings = (s: AppSettings) => setSettings(s);
+  const updateSettings = async (s: AppSettings) => {
+      setSettings(s);
+      await fetch(`${API_URL}?action=update_settings`, {
+          method: 'POST', body: JSON.stringify(s)
+      });
+  };
 
   // Community
-  const addMessage = (content: string) => {
+  const addMessage = async (content: string) => {
       if (!user) return;
       
       let memberInfo = undefined;
@@ -248,10 +258,17 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
           timestamp: new Date().toISOString()
       };
       setMessages(prev => [...prev, newMsg]);
+
+      await fetch(`${API_URL}?action=add_message`, {
+          method: 'POST', body: JSON.stringify(newMsg)
+      });
   };
 
-  const deleteMessage = (id: string) => {
+  const deleteMessage = async (id: string) => {
       setMessages(prev => prev.filter(m => m.id !== id));
+      await fetch(`${API_URL}?action=delete_message`, {
+          method: 'POST', body: JSON.stringify({ id })
+      });
   }
 
   const totalIncome = transactions
@@ -285,7 +302,8 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       messages,
       addMessage,
       deleteMessage,
-      stats: { balance, totalIncome, totalExpense, pendingCount }
+      stats: { balance, totalIncome, totalExpense, pendingCount },
+      isLoading
     }}>
       {children}
     </StoreContext.Provider>
