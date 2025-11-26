@@ -13,7 +13,7 @@ const StatCard: React.FC<{ title: string; amount: number; icon: React.ReactNode;
       {subtext && <p className="text-xs text-slate-400 mt-1">{subtext}</p>}
     </div>
     <div className={`p-3 rounded-full opacity-20 ${color.replace('text-', 'bg-')}`}>
-      {React.cloneElement(icon as React.ReactElement, { className: color })}
+      {React.isValidElement(icon) ? React.cloneElement(icon as React.ReactElement<any>, { className: color }) : icon}
     </div>
   </div>
 );

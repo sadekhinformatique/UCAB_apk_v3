@@ -22,7 +22,10 @@ const Budget: React.FC = () => {
   };
 
   const saveEdit = (id: string) => {
-    updateBudget(id, editValue);
+    const budgetToUpdate = budgets.find(b => b.id === id);
+    if (budgetToUpdate) {
+        updateBudget(id, editValue, budgetToUpdate.category);
+    }
     setEditingId(null);
   };
 
